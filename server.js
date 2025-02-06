@@ -71,6 +71,11 @@ app.post('/send-reminder', async (req, res) => {
         res.status(500).json({ success: false, error: "Email sending failed." });
     }
 });
-
+app.get('/test',(req,res)=>{
+    return res.status(200).json({
+        success:true,
+        message:"running successfully"
+    })
+})
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
