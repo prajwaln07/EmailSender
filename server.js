@@ -65,7 +65,6 @@ app.post('/send-reminder', async (req, res) => {
         };
 
         await sgMail.send(msg);
-        console.log(`Reminder email sent to ${email}`);
         res.json({ success: true, message: "Reminder email sent!" });
     } catch (error) {
         console.error("SendGrid Error:", error.response ? error.response.body : error);
