@@ -74,7 +74,7 @@ app.post('/send-reminder', async (req, res) => {
 app.get('/test',(req,res)=>{
     return res.status(200).json({
         success:true,
-        message:"running successfully"
+        message:"server running successfully "
     })
 })
 const PORT = process.env.PORT || 5000;
