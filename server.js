@@ -31,13 +31,14 @@ const getRandomQuote = () => motivationalQuotes[Math.floor(Math.random() * motiv
 
 app.post('/send-reminder', async (req, res) => {
     try {
-        const { email, problemLink, problemName } = req.body;
+        const { email, problemLink, problemName, notes } = req.body;
 
         if (!email || !problemLink || !problemName) {
             return res.status(400).json({ success: false, error: "Email, problem link, and name are required." });
         }
 
-        const fullMessage = `
+        // Construct the email content with notes
+        let fullMessage = `
             <html>
                 <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333;">
                     <div style="max-width: 600px; margin: 20px auto; padding: 20px; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);">
@@ -46,6 +47,19 @@ app.post('/send-reminder', async (req, res) => {
                         <p style="font-size: 16px; margin-top: 20px;"><strong>Problem:</strong> 
                             <a href="${problemLink}" target="_blank" style="color: #1E88E5; text-decoration: none;">${problemName}</a>
                         </p>
+        `;
+
+        // Add notes to the email content if they exist
+        if (notes) {
+            fullMessage += `
+                <div style="margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-left: 4px solid #4CAF50;">
+                    <h3 style="color: #4CAF50; margin: 0;">Your Notes:</h3>
+                    <p style="font-size: 16px; color: #555;">${notes}</p>
+                </div>
+            `;
+        }
+
+        fullMessage += `
                         <p style="text-align: center; margin-top: 20px;">
                             <a href="${problemLink}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold;">Solve Now</a>
                         </p>
@@ -71,11 +85,13 @@ app.post('/send-reminder', async (req, res) => {
         res.status(500).json({ success: false, error: "Email sending failed." });
     }
 });
-app.get('/test',(req,res)=>{
+
+app.get('/test', (req, res) => {
     return res.status(200).json({
-        success:true,
-        message:"server running successfully "
-    })
-})
+        success: true,
+        message: "Server running successfully"
+    });
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
