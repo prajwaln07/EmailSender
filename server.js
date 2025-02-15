@@ -29,6 +29,17 @@ const motivationalQuotes = [
 
 const getRandomQuote = () => motivationalQuotes[Math.floor(Math.random() * motivationalQuotes.length)];
 
+// Array of dynamic messages
+const dynamicMessages = [
+    "You promised yourself to solve a LeetCode problem again. It's time to stay true to your goal and crush it! 💪 Keep going!",
+    "Keep the momentum going! Time to revisit that LeetCode problem and get stronger! 💪",
+    "You're doing great! One more step towards mastery. Reattempt this problem and ace it! 🚀",
+    "Stay sharp and keep practicing! This LeetCode problem is waiting for you! 🔥",
+    "Challenge yourself again! Every reattempt makes you better. Let's do this! 💯"
+];
+
+const getRandomMessage = () => dynamicMessages[Math.floor(Math.random() * dynamicMessages.length)];
+
 app.post('/send-reminder', async (req, res) => {
     try {
         const { email, problemLink, problemName, notes } = req.body;
@@ -37,13 +48,16 @@ app.post('/send-reminder', async (req, res) => {
             return res.status(400).json({ success: false, error: "Email, problem link, and name are required." });
         }
 
+        // Get a random message for each email
+        const reminderMessage = getRandomMessage();
+
         // Construct the email content with notes
         let fullMessage = `
             <html>
                 <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333;">
                     <div style="max-width: 600px; margin: 20px auto; padding: 20px; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);">
                         <h1 style="color: #4CAF50;">LeetCode Reminder ⏰</h1>
-                        <p style="font-size: 16px; line-height: 1.5;">You promised yourself to solve a LeetCode problem again. It's time to stay true to your goal and crush it! 💪 Keep going!</p>
+                        <p style="font-size: 16px; line-height: 1.5;">${reminderMessage}</p>
                         <p style="font-size: 16px; margin-top: 20px;"><strong>Problem:</strong> 
                             <a href="${problemLink}" target="_blank" style="color: #1E88E5; text-decoration: none;">${problemName}</a>
                         </p>
