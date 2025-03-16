@@ -224,6 +224,7 @@ const rateLimitMiddleware = async (req, res, next) => {
 
 // Routes
 app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
+    console.log("hit ",Date.now());
     try {
         const { email, timeInDays, problemLink, problemName, notes } = req.body;
 
