@@ -1,111 +1,419 @@
 require('dotenv').config();
 const express = require('express');
 const sgMail = require('@sendgrid/mail');
+const nodemailer = require('nodemailer');
 const cors = require('cors');
+const Queue = require('bull');
+const { createBullBoard } = require('@bull-board/api');
+const { BullAdapter } = require('@bull-board/api/bullAdapter');
+const { ExpressAdapter } = require('@bull-board/express');
+const Redis = require('ioredis');
+
+// Update Redis configuration
+const getRedisConfig = () => {
+    if (process.env.NODE_ENV === 'production') {
+        return {
+            url:process.env.REDIS_URL,
+            tls: {
+                rejectUnauthorized: false
+            }
+        };
+    }
+    
+    // Default local configuration
+    return {
+        host: process.env.REDIS_HOST || 'localhost',
+        port: process.env.REDIS_PORT || 6379
+    };
+};
+
+// Update Redis client initialization
+const redis = new Redis(getRedisConfig());
+
+// Add after Redis client initialization
+redis.on('error', (error) => {
+    console.error('Redis connection error:', error);
+});
+
+redis.on('connect', () => {
+    console.log('Successfully connected to Redis');
+});
+
+// Create a new Bull queue for email reminders
+const emailQueue = new Queue('email-reminders', {
+    redis: getRedisConfig()
+});
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+    origin: process.env.FRONTEND_URL || '*',
+    methods: ['GET', 'POST'],
+    credentials: true
+}));
 
-// Ensure API key exists before setting it
-if (!process.env.SENDGRID_API_KEY || !process.env.EMAIL_FROM) {
-    console.error("Missing required environment variables. Check SENDGRID_API_KEY and EMAIL_FROM.");
-    process.exit(1);
+// Add security headers
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    next();
+});
+
+// Validate environment variables
+const validateEnvVariables = () => {
+    const required = [
+        'SENDGRID_API_KEY',
+        'EMAIL_FROM',
+        'GMAIL_USER_1',
+        'GMAIL_APP_PASSWORD_1',
+        'REDIS_URL'  // Add this for production
+    ];
+
+    if (process.env.NODE_ENV === 'production') {
+        if (!process.env.REDIS_URL) {
+            console.error("Missing REDIS_URL in production environment");
+            process.exit(1);
+        }
+    }
+
+    const missing = required.filter(key => !process.env[key]);
+    if (missing.length > 0) {
+        console.error("Missing required environment variables:", missing);
+        process.exit(1);
+    }
+};
+validateEnvVariables();
+
+// Email service configuration
+const gmailAccounts = [
+    {
+        user: process.env.GMAIL_USER_1,
+        pass: process.env.GMAIL_APP_PASSWORD_1,
+        dailyLimit: 500
+    },
+    {
+        user: process.env.GMAIL_USER_2,
+        pass: process.env.GMAIL_APP_PASSWORD_2,
+        dailyLimit: 500
+    },
+    {
+        user: process.env.GMAIL_USER_3,
+        pass: process.env.GMAIL_APP_PASSWORD_3,
+        dailyLimit: 500
+    }
+].filter(account => account.user && account.pass); // Only include configured accounts
+
+// Email Service Class
+class EmailService {
+    constructor() {
+        this.currentGmailIndex = 0;
+        this.setupTransporters();
+        this.resetCountsDaily();
+    }
+
+    setupTransporters() {
+        this.gmailTransporters = gmailAccounts.map(account => 
+            nodemailer.createTransport({
+                service: 'gmail',
+                auth: {
+                    user: account.user,
+                    pass: account.pass
+                }
+            })
+        );
+    }
+
+    async resetCountsDaily() {
+        setInterval(async () => {
+            await redis.set('sendgrid_count', 0);
+            for (let i = 0; i < gmailAccounts.length; i++) {
+                await redis.set(`gmail_count_${i}`, 0);
+            }
+        }, 24 * 60 * 60 * 1000);
+    }
+
+    async getGmailCount(index) {
+        const count = await redis.get(`gmail_count_${index}`);
+        return parseInt(count) || 0;
+    }
+
+    async incrementGmailCount(index) {
+        await redis.incr(`gmail_count_${index}`);
+    }
+
+    async getSendGridCount() {
+        const count = await redis.get('sendgrid_count');
+        return parseInt(count) || 0;
+    }
+
+    async incrementSendGridCount() {
+        await redis.incr('sendgrid_count');
+    }
+
+    async sendEmail(msg) {
+        // Try SendGrid first
+        const sendGridCount = await this.getSendGridCount();
+        if (sendGridCount < 100) {
+            try {
+                sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+                await sgMail.send(msg);
+                await this.incrementSendGridCount();
+                return;
+            } catch (error) {
+                console.error('SendGrid failed:', error.message);
+            }
+        }
+
+        // Try Gmail accounts
+        for (let i = 0; i < gmailAccounts.length; i++) {
+            const currentIndex = (this.currentGmailIndex + i) % gmailAccounts.length;
+            const gmailCount = await this.getGmailCount(currentIndex);
+            
+            if (gmailCount < gmailAccounts[currentIndex].dailyLimit) {
+                try {
+                    const transporter = this.gmailTransporters[currentIndex];
+                    await transporter.sendMail({
+                        from: gmailAccounts[currentIndex].user,
+                        to: msg.to,
+                        subject: msg.subject,
+                        html: msg.html
+                    });
+                    
+                    await this.incrementGmailCount(currentIndex);
+                    this.currentGmailIndex = currentIndex;
+                    return;
+                } catch (error) {
+                    console.error(`Gmail account ${currentIndex + 1} failed:`, error.message);
+                    continue;
+                }
+            }
+        }
+
+        throw new Error('All email services failed or reached their limits');
+    }
 }
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const emailService = new EmailService();
 
-// Array of motivational quotes
-const motivationalQuotes = [
-    "The harder you work for something, the greater you'll feel when you achieve it.",
-    "Success doesn't come from what you do occasionally, it comes from what you do consistently.",
-    "Don't watch the clock; do what it does. Keep going.",
-    "Success is the sum of small efforts, repeated day in and day out.",
-    "Believe in yourself and all that you are. Know that there is something inside you that is greater than any obstacle.",
-    "The only way to do great work is to love what you do.",
-    "You are braver than you believe, stronger than you seem, and smarter than you think.",
-    "Push yourself, because no one else is going to do it for you."
-];
+// Rate limiting middleware
+const rateLimitMiddleware = async (req, res, next) => {
+    const clientIp = req.ip;
+    const currentHour = Math.floor(Date.now() / 3600000);
+    const key = `ratelimit:${clientIp}:${currentHour}`;
 
-const getRandomQuote = () => motivationalQuotes[Math.floor(Math.random() * motivationalQuotes.length)];
-
-// Array of dynamic messages
-const dynamicMessages = [
-    "You promised yourself to solve a LeetCode problem again. It's time to stay true to your goal and crush it! 💪 Keep going!",
-    "Keep the momentum going! Time to revisit that LeetCode problem and get stronger! 💪",
-    "You're doing great! One more step towards mastery. Reattempt this problem and ace it! 🚀",
-    "Stay sharp and keep practicing! This LeetCode problem is waiting for you! 🔥",
-    "Challenge yourself again! Every reattempt makes you better. Let's do this! 💯"
-];
-
-const getRandomMessage = () => dynamicMessages[Math.floor(Math.random() * dynamicMessages.length)];
-
-app.post('/send-reminder', async (req, res) => {
     try {
-        const { email, problemLink, problemName, notes } = req.body;
+        const requests = await redis.incr(key);
+        if (requests === 1) {
+            await redis.expire(key, 3600);
+        }
+
+        if (requests > 6) {
+            const ttl = await redis.ttl(key);
+            return res.status(429).json({
+                success: false,
+                error: "Rate limit exceeded. Too many requests.",
+                remainingTime: `Try again in ${Math.floor(ttl / 60)} minutes`
+            });
+        }
+        
+        next();
+    } catch (error) {
+        console.error('Rate limiting error:', error);
+        next();
+    }
+};
+
+// Routes
+app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
+    try {
+        const { email, timeInDays, problemLink, problemName, notes } = req.body;
 
         if (!email || !problemLink || !problemName) {
-            return res.status(400).json({ success: false, error: "Email, problem link, and name are required." });
+            return res.status(400).json({ 
+                success: false, 
+                error: "Email, problem link, and name are required." 
+            });
         }
 
-        // Get a random message for each email
-        const reminderMessage = getRandomMessage();
+        await emailQueue.add(
+            { email, problemLink, problemName, notes },
+            {
+                delay: 1*1000,
+                attempts: 3
+            }
+        );
 
-        // Construct the email content with notes
-        let fullMessage = `
-            <html>
-                <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333;">
-                    <div style="max-width: 600px; margin: 20px auto; padding: 20px; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);">
-                        <h1 style="color: #4CAF50;">LeetCode Reminder ⏰</h1>
-                        <p style="font-size: 16px; line-height: 1.5;">${reminderMessage}</p>
-                        <p style="font-size: 16px; margin-top: 20px;"><strong>Problem:</strong> 
-                            <a href="${problemLink}" target="_blank" style="color: #1E88E5; text-decoration: none;">${problemName}</a>
-                        </p>
-        `;
-
-        // Add notes to the email content if they exist
-        if (notes) {
-            fullMessage += `
-                <div style="margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-left: 4px solid #4CAF50;">
-                    <h3 style="color: #4CAF50; margin: 0;">Your Notes:</h3>
-                    <p style="font-size: 16px; color: #555;">${notes}</p>
-                </div>
-            `;
-        }
-
-        fullMessage += `
-                        <p style="text-align: center; margin-top: 20px;">
-                            <a href="${problemLink}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold;">Solve Now</a>
-                        </p>
-                        <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
-                        <h2 style="color: #FF5722;">Motivational Quote:</h2>
-                        <p style="font-size: 18px; font-weight: bold; font-style: italic; color: #555;">"${getRandomQuote()}"</p>
-                    </div>
-                </body>
-            </html>
-        `;
-
-        const msg = {
-            to: email,
-            from: process.env.EMAIL_FROM,
-            subject: "LeetCode Reminder ⏰",
-            html: fullMessage
-        };
-
-        await sgMail.send(msg);
-        res.json({ success: true, message: "Reminder email sent!" });
+        return res.json({ 
+            success: true, 
+            message: `Reminder email scheduled for ${timeInDays} days` 
+        });
     } catch (error) {
-        console.error("SendGrid Error:", error.response ? error.response.body : error);
-        res.status(500).json({ success: false, error: "Email sending failed." });
+        console.error("Scheduling Error:", error);
+        res.status(500).json({ success: false, error: "Failed to schedule email." });
     }
 });
 
-app.get('/test', (req, res) => {
-    return res.status(200).json({
-        success: true,
-        message: "Server running successfully"
+// Process email queue..
+emailQueue.process(async (job) => {
+    const { email, problemLink, problemName, notes } = job.data;
+    
+    const emailTemplate = `
+        <html>
+            <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333;">
+                <div style="max-width: 600px; margin: 20px auto; padding: 20px; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);">
+                    <h1 style="color: #4CAF50;">LeetCode Reminder ⏰</h1>
+                    <p style="font-size: 16px; margin-top: 20px;"><strong>Problem:</strong> 
+                        <a href="${problemLink}" target="_blank" style="color: #1E88E5; text-decoration: none;">${problemName}</a>
+                    </p>
+                    ${notes ? `
+                        <div style="margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-left: 4px solid #4CAF50;">
+                            <h3 style="color: #4CAF50; margin: 0;">Your Notes:</h3>
+                            <p style="font-size: 16px; color: #555;">${notes}</p>
+                        </div>
+                    ` : ''}
+                    <p style="text-align: center; margin-top: 20px;">
+                        <a href="${problemLink}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold;">Solve Now</a>
+                    </p>
+                </div>
+            </body>
+        </html>
+    `;
+
+    await emailService.sendEmail({
+        to: email,
+        subject: "LeetCode Reminder ⏰",
+        html: emailTemplate
     });
 });
 
+// Queue event handlers
+emailQueue.on('completed', (job) => {
+});
+
+emailQueue.on('failed', (job, err) => {
+    console.error(`Job ${job.id} failed! Error:`, err);
+});
+
+// Bull Board setup
+const serverAdapter = new ExpressAdapter();
+createBullBoard({
+    queues: [new BullAdapter(emailQueue)],
+    serverAdapter
+});
+
+serverAdapter.setBasePath('/admin/queues');
+app.use('/admin/queues', serverAdapter.getRouter());
+
+// Basic routes
+app.get('/', (req, res) => res.send("Server is running"));
+
+// Testing Routes
+app.get('/test-email-services', async (req, res) => {
+    const testEmail = "prajwal.nimbalkar1910@gmail.com";
+    const results = {
+        sendgrid: null,
+        gmailAccounts: []
+    };
+
+    // Test SendGrid
+    try {
+        sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+        await sgMail.send({
+            to: testEmail,
+            from: process.env.EMAIL_FROM,
+            subject: "Test Email from SendGrid",
+            html: `
+                <h1>SendGrid Test Successful!</h1>
+                <p>This email confirms that your SendGrid configuration is working correctly.</p>
+                <p>Timestamp: ${new Date().toLocaleString()}</p>
+            `
+        });
+        results.sendgrid = "Success";
+    } catch (error) {
+        results.sendgrid = `Failed: ${error.message}`;
+    }
+
+    // Test each Gmail account
+    for (let i = 0; i < gmailAccounts.length; i++) {
+        try {
+            const transporter = nodemailer.createTransport({
+                service: 'gmail',
+                auth: {
+                    user: gmailAccounts[i].user,
+                    pass: gmailAccounts[i].pass
+                }
+            });
+
+            await transporter.sendMail({
+                from: gmailAccounts[i].user,
+                to: testEmail,
+                subject: `Test Email from Gmail Account ${i + 1}`,
+                html: `
+                    <h1>Gmail Account ${i + 1} Test Successful!</h1>
+                    <p>This email confirms that your Gmail account ${i + 1} configuration is working correctly.</p>
+                    <p>Sending from: ${gmailAccounts[i].user}</p>
+                    <p>Timestamp: ${new Date().toLocaleString()}</p>
+                `
+            });
+
+            results.gmailAccounts.push({
+                account: gmailAccounts[i].user,
+                status: "Success"
+            });
+        } catch (error) {
+            results.gmailAccounts.push({
+                account: gmailAccounts[i].user,
+                status: `Failed: ${error.message}`
+            });
+        }
+    }
+
+    res.json({
+        success: true,
+        message: "Email service test completed",
+        results
+    });
+});
+
+
+
+// Email service status endpoint
+app.get('/email-service-status', async (req, res) => {
+    try {
+        const sendGridCount = await emailService.getSendGridCount();
+        
+        const gmailStatus = await Promise.all(
+            gmailAccounts.map(async (account, index) => {
+                const count = await emailService.getGmailCount(index);
+                return {
+                    email: account.user,
+                    emailsSent: count,
+                    remaining: account.dailyLimit - count,
+                    isAvailable: count < account.dailyLimit
+                };
+            })
+        );
+
+        res.json({
+            success: true,
+            status: {
+                sendgrid: {
+                    emailsSent: sendGridCount,
+                    remaining: 100 - sendGridCount,
+                    isAvailable: sendGridCount < 100
+                },
+                gmailAccounts: gmailStatus
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: "Failed to get email service status"
+        });
+    }
+});
+
+// Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
