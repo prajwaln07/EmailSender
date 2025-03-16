@@ -12,30 +12,20 @@ const Redis = require('ioredis');
 // Redis and Bull Queue Configuration
 const UPSTASH_REDIS_URL = "rediss://default:AX3SAAIjcDFkNDQxMzc1MDM3MTM0MTgzOTdkNGY0MzUzMDVlYWE5ZnAxMA@summary-crayfish-32210.upstash.io:6379";
 
-// Initialize Redis with more detailed options
+// Simple Redis client for general operations
 const redis = new Redis(UPSTASH_REDIS_URL, {
-    tls: { rejectUnauthorized: false },
-    retryStrategy(times) {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-    },
-    maxRetriesPerRequest: 3,
-    enableReadyCheck: true,
-    connectionName: 'leetcode-reminder-service',
-    connectTimeout: 20000,
-    disconnectTimeout: 20000,
-    commandTimeout: 10000,
-    keepAlive: 30000,
-    noDelay: true
+    tls: { rejectUnauthorized: false }
 });
 
-// Initialize Bull with the same URL
+// Simplified Bull queue configuration
 const emailQueue = new Queue('email-reminders', {
-    createClient: (type, redisOpts) => {
-        return new Redis(UPSTASH_REDIS_URL, {
-            tls: { rejectUnauthorized: false },
-            maxRetriesPerRequest: 3
-        });
+    redis: UPSTASH_REDIS_URL,
+    defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+            type: 'exponential',
+            delay: 2000
+        }
     }
 });
 
