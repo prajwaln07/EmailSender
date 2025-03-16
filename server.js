@@ -11,32 +11,36 @@ const Redis = require('ioredis');
 
 // Update Redis configuration..
 const getRedisConfig = () => {
-    if (process.env.NODE_ENV === 'production') {
-        return {
-            url:process.env.REDIS_URL,
-            tls: {
-                rejectUnauthorized: false
-            }
-        };
-    }
+    // Always use Upstash Redis URL in production (Render)
+    const UPSTASH_URL = "rediss://default:AX3SAAIjcDFkNDQxMzc1MDM3MTM0MTgzOTdkNGY0MzUzMDVlYWE5ZnAxMA@summary-crayfish-32210.upstash.io:6379";
     
-    // Default local configuration
     return {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: process.env.REDIS_PORT || 6379
+        url: UPSTASH_URL,
+        tls: {
+            rejectUnauthorized: false
+        },
+        maxRetriesPerRequest: 3,
+        retryStrategy: (times) => {
+            const delay = Math.min(times * 50, 2000);
+            return delay;
+        }
     };
 };
 
-// Update Redis client initialization
+// Initialize Redis with the configuration
 const redis = new Redis(getRedisConfig());
 
-// Add after Redis client initialization
+// Add better error logging for Redis
 redis.on('error', (error) => {
-    console.error('Redis connection error:', error);
+    console.error('Redis connection error details:', {
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+    });
 });
 
 redis.on('connect', () => {
-    console.log('Successfully connected to Redis');
+    console.log('Successfully connected to Redis at:', redis.options.url);
 });
 
 // Create a new Bull queue for email reminders
@@ -376,8 +380,6 @@ app.get('/test-email-services', async (req, res) => {
     });
 });
 
-
-
 // Email service status endpoint
 app.get('/email-service-status', async (req, res) => {
     try {
@@ -410,6 +412,36 @@ app.get('/email-service-status', async (req, res) => {
         res.status(500).json({
             success: false,
             error: "Failed to get email service status"
+        });
+    }
+});
+
+// Add this test endpoint
+app.get('/redis-test', async (req, res) => {
+    try {
+        // Test Redis connection
+        await redis.set('test', 'Hello from Render!');
+        const testValue = await redis.get('test');
+        
+        res.json({
+            success: true,
+            message: 'Redis connection successful',
+            testValue,
+            redisOptions: {
+                host: redis.options.host,
+                port: redis.options.port,
+                tls: !!redis.options.tls
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            details: {
+                code: error.code,
+                syscall: error.syscall,
+                hostname: error.hostname
+            }
         });
     }
 });
