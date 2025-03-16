@@ -9,7 +9,7 @@ const { BullAdapter } = require('@bull-board/api/bullAdapter');
 const { ExpressAdapter } = require('@bull-board/express');
 const Redis = require('ioredis');
 
-// Update Redis configuration
+// Update Redis configuration..
 const getRedisConfig = () => {
     if (process.env.NODE_ENV === 'production') {
         return {
