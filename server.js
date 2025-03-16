@@ -9,28 +9,37 @@ const { BullAdapter } = require('@bull-board/api/bullAdapter');
 const { ExpressAdapter } = require('@bull-board/express');
 const Redis = require('ioredis');
 
-// Update Redis configuration..
-const getRedisConfig = () => {
-    // Always use Upstash Redis URL in production (Render)
-    const UPSTASH_URL = "rediss://default:AX3SAAIjcDFkNDQxMzc1MDM3MTM0MTgzOTdkNGY0MzUzMDVlYWE5ZnAxMA@summary-crayfish-32210.upstash.io:6379";
-    
-    return {
-        url: UPSTASH_URL,
-        tls: {
-            rejectUnauthorized: false
-        },
-        maxRetriesPerRequest: 3,
-        retryStrategy: (times) => {
-            const delay = Math.min(times * 50, 2000);
-            return delay;
-        }
-    };
-};
+// Redis and Bull Queue Configuration
+const UPSTASH_REDIS_URL = "rediss://default:AX3SAAIjcDFkNDQxMzc1MDM3MTM0MTgzOTdkNGY0MzUzMDVlYWE5ZnAxMA@summary-crayfish-32210.upstash.io:6379";
 
-// Initialize Redis with the configuration
-const redis = new Redis(getRedisConfig());
+// Initialize Redis with more detailed options
+const redis = new Redis(UPSTASH_REDIS_URL, {
+    tls: { rejectUnauthorized: false },
+    retryStrategy(times) {
+        const delay = Math.min(times * 50, 2000);
+        return delay;
+    },
+    maxRetriesPerRequest: 3,
+    enableReadyCheck: true,
+    connectionName: 'leetcode-reminder-service',
+    connectTimeout: 20000,
+    disconnectTimeout: 20000,
+    commandTimeout: 10000,
+    keepAlive: 30000,
+    noDelay: true
+});
 
-// Add better error logging for Redis
+// Initialize Bull with the same URL
+const emailQueue = new Queue('email-reminders', {
+    createClient: (type, redisOpts) => {
+        return new Redis(UPSTASH_REDIS_URL, {
+            tls: { rejectUnauthorized: false },
+            maxRetriesPerRequest: 3
+        });
+    }
+});
+
+// Redis connection logging
 redis.on('error', (error) => {
     console.error('Redis connection error details:', {
         message: error.message,
@@ -40,12 +49,7 @@ redis.on('error', (error) => {
 });
 
 redis.on('connect', () => {
-    console.log('Successfully connected to Redis at:', redis.options.url);
-});
-
-// Create a new Bull queue for email reminders
-const emailQueue = new Queue('email-reminders', {
-    redis: getRedisConfig()
+    console.log('Successfully connected to Redis');
 });
 
 const app = express();
@@ -416,10 +420,9 @@ app.get('/email-service-status', async (req, res) => {
     }
 });
 
-// Add this test endpoint
+// Add this test endpoint to verify Redis connection
 app.get('/redis-test', async (req, res) => {
     try {
-        // Test Redis connection
         await redis.set('test', 'Hello from Render!');
         const testValue = await redis.get('test');
         
@@ -427,20 +430,19 @@ app.get('/redis-test', async (req, res) => {
             success: true,
             message: 'Redis connection successful',
             testValue,
-            redisOptions: {
-                host: redis.options.host,
-                port: redis.options.port,
-                tls: !!redis.options.tls
+            connectionDetails: {
+                url: UPSTASH_REDIS_URL.replace(/\/\/.*@/, '//***@'), // Hide credentials
+                connected: redis.status === 'ready'
             }
         });
     } catch (error) {
+        console.error('Redis test error:', error);
         res.status(500).json({
             success: false,
             error: error.message,
             details: {
                 code: error.code,
-                syscall: error.syscall,
-                hostname: error.hostname
+                syscall: error.syscall
             }
         });
     }
