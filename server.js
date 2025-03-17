@@ -12,24 +12,53 @@ const Redis = require('ioredis');
 // Redis and Bull Queue Configuration
 const UPSTASH_REDIS_URL = "rediss://default:AX3SAAIjcDFkNDQxMzc1MDM3MTM0MTgzOTdkNGY0MzUzMDVlYWE5ZnAxMA@summary-crayfish-32210.upstash.io:6379";
 
-// Simple Redis client for general operations
-const redis = new Redis(UPSTASH_REDIS_URL, {
+// Redis configuration with reconnect strategy
+const redisOptions = {
+    maxRetriesPerRequest: 3,
+    enableReadyCheck: false,
+    retryStrategy(times) {
+        const delay = Math.min(times * 50, 2000);
+        return delay;
+    },
+    reconnectOnError(err) {
+        const targetError = 'READONLY';
+        if (err.message.includes(targetError)) {
+            return true;
+        }
+        return false;
+    },
     tls: { rejectUnauthorized: false }
-});
+};
 
-// Simplified Bull queue configuration
+// Simple Redis client for general operations
+const redis = new Redis(UPSTASH_REDIS_URL, redisOptions);
+
+// Simplified Bull queue configuration with improved connection handling
 const emailQueue = new Queue('email-reminders', {
-    redis: UPSTASH_REDIS_URL,
+    redis: {
+        port: 6379,
+        host: new URL(UPSTASH_REDIS_URL).hostname,
+        password: new URL(UPSTASH_REDIS_URL).password,
+        tls: { rejectUnauthorized: false },
+        maxRetriesPerRequest: 3,
+        enableReadyCheck: false,
+        retryStrategy(times) {
+            const delay = Math.min(times * 50, 2000);
+            return delay;
+        }
+    },
     defaultJobOptions: {
         attempts: 3,
         backoff: {
-            type: 'exponential',
-            delay: 2000
-        }
+            type: 'fixed',
+            delay: 1000
+        },
+        removeOnComplete: true,
+        removeOnFail: 100
     }
 });
 
-// Redis connection logging
+// Enhanced Redis error handling
 redis.on('error', (error) => {
     console.error('Redis connection error details:', {
         message: error.message,
@@ -40,6 +69,29 @@ redis.on('error', (error) => {
 
 redis.on('connect', () => {
     console.log('Successfully connected to Redis');
+});
+
+redis.on('ready', () => {
+    console.log('Redis client ready');
+});
+
+redis.on('reconnecting', () => {
+    console.log('Redis client reconnecting');
+});
+
+// Enhanced Queue error handling
+emailQueue.on('error', (error) => {
+    console.error('Queue error:', error);
+    // Attempt to gracefully recover
+    if (error.code === 'ECONNRESET') {
+        console.log('Attempting to recover from connection reset...');
+        // Optional: Implement custom recovery logic here
+    }
+});
+
+emailQueue.on('failed', (job, err) => {
+    console.error(`Job ${job.id} failed with error:`, err);
+    // Implement custom failure handling if needed
 });
 
 const app = express();
@@ -206,7 +258,7 @@ const rateLimitMiddleware = async (req, res, next) => {
             await redis.expire(key, 3600);
         }
 
-        if (requests > 6) {
+        if (requests > 7) {
             const ttl = await redis.ttl(key);
             return res.status(429).json({
                 success: false,
@@ -222,9 +274,29 @@ const rateLimitMiddleware = async (req, res, next) => {
     }
 };
 
-// Routes
+// Add a connection health check
+const checkRedisConnection = async () => {
+    try {
+        await redis.ping();
+        return true;
+    } catch (error) {
+        console.error('Redis health check failed:', error);
+        return false;
+    }
+};
+
+// Modify the send-reminder route to include connection check
 app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
-    console.log("hit ",Date.now());
+    
+    // Check Redis connection before proceeding
+    const isRedisConnected = await checkRedisConnection();
+    if (!isRedisConnected) {
+        return res.status(503).json({
+            success: false,
+            error: "Service temporarily unavailable. Please try again later."
+        });
+    }
+
     try {
         const { email, timeInDays, problemLink, problemName, notes } = req.body;
 
@@ -235,63 +307,74 @@ app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
             });
         }
 
-        await emailQueue.add(
+        const job = await emailQueue.add(
             { email, problemLink, problemName, notes },
             {
-                delay: 1*1000,
-                attempts: 3
+                delay: 1000,
+                attempts: 3,
+                removeOnComplete: true
             }
         );
 
         return res.json({ 
             success: true, 
-            message: `Reminder email scheduled for ${timeInDays} days` 
+            message: `Reminder email scheduled`,
+            jobId: job.id
         });
     } catch (error) {
         console.error("Scheduling Error:", error);
-        res.status(500).json({ success: false, error: "Failed to schedule email." });
+        res.status(500).json({ 
+            success: false, 
+            error: "Failed to schedule email.",
+            details: error.message
+        });
     }
 });
 
-// Process email queue..
+// Improved queue processing with better error handling
 emailQueue.process(async (job) => {
-    const { email, problemLink, problemName, notes } = job.data;
-    
-    const emailTemplate = `
-        <html>
-            <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333;">
-                <div style="max-width: 600px; margin: 20px auto; padding: 20px; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);">
-                    <h1 style="color: #4CAF50;">LeetCode Reminder ⏰</h1>
-                    <p style="font-size: 16px; margin-top: 20px;"><strong>Problem:</strong> 
-                        <a href="${problemLink}" target="_blank" style="color: #1E88E5; text-decoration: none;">${problemName}</a>
-                    </p>
-                    ${notes ? `
-                        <div style="margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-left: 4px solid #4CAF50;">
-                            <h3 style="color: #4CAF50; margin: 0;">Your Notes:</h3>
-                            <p style="font-size: 16px; color: #555;">${notes}</p>
-                        </div>
-                    ` : ''}
-                    <p style="text-align: center; margin-top: 20px;">
-                        <a href="${problemLink}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold;">Solve Now</a>
-                    </p>
-                </div>
-            </body>
-        </html>
-    `;
+    try {
+        const { email, problemLink, problemName, notes } = job.data;
+        
+        const emailTemplate = `
+            <html>
+                <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333;">
+                    <div style="max-width: 600px; margin: 20px auto; padding: 20px; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);">
+                        <h1 style="color: #4CAF50;">LeetCode Reminder ⏰</h1>
+                        <p style="font-size: 16px; margin-top: 20px;"><strong>Problem:</strong> 
+                            <a href="${problemLink}" target="_blank" style="color: #1E88E5; text-decoration: none;">${problemName}</a>
+                        </p>
+                        ${notes ? `
+                            <div style="margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-left: 4px solid #4CAF50;">
+                                <h3 style="color: #4CAF50; margin: 0;">Your Notes:</h3>
+                                <p style="font-size: 16px; color: #555;">${notes}</p>
+                            </div>
+                        ` : ''}
+                        <p style="text-align: center; margin-top: 20px;">
+                            <a href="${problemLink}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: bold;">Solve Now</a>
+                        </p>
+                    </div>
+                </body>
+            </html>
+        `;
 
-    await emailService.sendEmail({
-        to: email,
-        subject: "LeetCode Reminder ⏰",
-        html: emailTemplate
-    });
+        await emailService.sendEmail({
+            to: email,
+            subject: "LeetCode Reminder ⏰",
+            html: emailTemplate
+        });
+
+        console.log(`Job ${job.id} completed successfully`);
+        return { success: true, email };
+    } catch (error) {
+        console.error(`Job ${job.id} failed:`, error);
+        throw error;
+    }
 });
 
-// Queue event handlers
-emailQueue.on('completed', (job) => {
-});
-
-emailQueue.on('failed', (job, err) => {
-    console.error(`Job ${job.id} failed! Error:`, err);
+// Improved queue event handlers
+emailQueue.on('completed', (job, result) => {
+    console.log(`Job ${job.id} completed with result:`, result);
 });
 
 // Bull Board setup
@@ -376,7 +459,7 @@ app.get('/test-email-services', async (req, res) => {
 });
 
 // Email service status endpoint
-app.get('/email-service-status', async (req, res) => {
+app.get('/em', async (req, res) => {
     try {
         const sendGridCount = await emailService.getSendGridCount();
         
