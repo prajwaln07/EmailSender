@@ -285,9 +285,11 @@ const checkRedisConnection = async () => {
     }
 };
 
+
 // Modify the send-reminder route to include connection check
 app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
     // Check Redis connection before proceeding
+    console.log("hit ");
     const isRedisConnected = await checkRedisConnection();
     if (!isRedisConnected) {
         return res.status(503).json({
@@ -305,7 +307,7 @@ app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
                 error: "Email, problem link, and name are required." 
             });
         }
-
+        console.log(" adding  to queue ");
         const job = await emailQueue.add(
             { email, problemLink, problemName, notes },
             {
@@ -314,7 +316,7 @@ app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
                 removeOnComplete: true
             }
         );
-
+        console.log("added to queue ");
         return res.json({ 
             success: true, 
             message: `Reminder email scheduled`,
