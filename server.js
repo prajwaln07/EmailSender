@@ -287,13 +287,12 @@ const checkRedisConnection = async () => {
 
 // Modify the send-reminder route to include connection check
 app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
-    
     // Check Redis connection before proceeding
     const isRedisConnected = await checkRedisConnection();
     if (!isRedisConnected) {
         return res.status(503).json({
             success: false,
-            error: "Service temporarily unavailable. Please try again later."
+            error: "Service temporarily unavailable. Please try again later....."
         });
     }
 
@@ -310,7 +309,7 @@ app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
         const job = await emailQueue.add(
             { email, problemLink, problemName, notes },
             {
-                delay: 1000,
+                delay: timeInDays*24*60*60*1000,
                 attempts: 3,
                 removeOnComplete: true
             }
