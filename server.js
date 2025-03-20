@@ -10,7 +10,8 @@ const { ExpressAdapter } = require('@bull-board/express');
 const Redis = require('ioredis');
 
 // Redis and Bull Queue Configuration
-const UPSTASH_REDIS_URL = "rediss://default:AX3SAAIjcDFkNDQxMzc1MDM3MTM0MTgzOTdkNGY0MzUzMDVlYWE5ZnAxMA@summary-crayfish-32210.upstash.io:6379";
+
+let UPSTASH_REDIS_URL = process.env.UPSTASH_REDIS_URL;
 
 // Redis configuration with reconnect strategy
 const redisOptions = {
