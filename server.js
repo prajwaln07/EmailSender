@@ -3,6 +3,8 @@ const express = require('express');
 const sgMail = require('@sendgrid/mail');
 const nodemailer = require('nodemailer');
 const cors = require('cors');
+
+
 const Queue = require('bull');
 const { createBullBoard } = require('@bull-board/api');
 const { BullAdapter } = require('@bull-board/api/bullAdapter');
@@ -52,7 +54,7 @@ const emailQueue = new Queue('email-reminders', {
         attempts: 3,
         backoff: {
             type: 'fixed',
-            delay: 1000
+            delay: 3000
         },
         removeOnComplete: true,
         removeOnFail: 100
@@ -98,7 +100,7 @@ emailQueue.on('failed', (job, err) => {
 const app = express();
 app.use(express.json());
 app.use(cors({
-    origin: process.env.FRONTEND_URL || '*',
+    origin: '*',
     methods: ['GET', 'POST'],
     credentials: true
 }));
@@ -118,7 +120,7 @@ const validateEnvVariables = () => {
         'EMAIL_FROM',
         'GMAIL_USER_1',
         'GMAIL_APP_PASSWORD_1',
-        'REDIS_URL'  // Add this for production
+        'REDIS_URL'  
     ];
 
     if (process.env.NODE_ENV === 'production') {
@@ -153,10 +155,11 @@ const gmailAccounts = [
         pass: process.env.GMAIL_APP_PASSWORD_3,
         dailyLimit: 500
     }
-].filter(account => account.user && account.pass); // Only include configured accounts
+].filter(account => account.user && account.pass);
 
 // Email Service Class
 class EmailService {
+    
     constructor() {
         this.currentGmailIndex = 0;
         this.setupTransporters();
@@ -205,7 +208,7 @@ class EmailService {
     async sendEmail(msg) {
         // Try SendGrid first
         const sendGridCount = await this.getSendGridCount();
-        if (sendGridCount < 100) {
+        if (sendGridCount < 300) {
             try {
                 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
                 await sgMail.send(msg);
@@ -372,10 +375,7 @@ emailQueue.process(async (job) => {
     }
 });
 
-// Improved queue event handlers
-emailQueue.on('completed', (job, result) => {
-    console.log(`Job ${job.id} completed with result:`, result);
-});
+
 
 // Bull Board setup
 const serverAdapter = new ExpressAdapter();
