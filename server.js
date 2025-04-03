@@ -6,9 +6,6 @@ const cors = require('cors');
 
 
 const Queue = require('bull');
-const { createBullBoard } = require('@bull-board/api');
-const { BullAdapter } = require('@bull-board/api/bullAdapter');
-const { ExpressAdapter } = require('@bull-board/express');
 const Redis = require('ioredis');
 
 // Redis and Bull Queue Configuration
@@ -61,41 +58,7 @@ const emailQueue = new Queue('email-reminders', {
     }
 });
 
-// Enhanced Redis error handling
-redis.on('error', (error) => {
-    console.error('Redis connection error details:', {
-        message: error.message,
-        code: error.code,
-        stack: error.stack
-    });
-});
 
-redis.on('connect', () => {
-    console.log('Successfully connected to Redis');
-});
-
-redis.on('ready', () => {
-    console.log('Redis client ready');
-});
-
-redis.on('reconnecting', () => {
-    console.log('Redis client reconnecting');
-});
-
-// Enhanced Queue error handling
-emailQueue.on('error', (error) => {
-    console.error('Queue error:', error);
-    // Attempt to gracefully recover
-    if (error.code === 'ECONNRESET') {
-        console.log('Attempting to recover from connection reset...');
-        // Optional: Implement custom recovery logic here
-    }
-});
-
-emailQueue.on('failed', (job, err) => {
-    console.error(`Job ${job.id} failed with error:`, err);
-    // Implement custom failure handling if needed
-});
 
 const app = express();
 app.use(express.json());
@@ -377,150 +340,10 @@ emailQueue.process(async (job) => {
 
 
 
-// Bull Board setup
-const serverAdapter = new ExpressAdapter();
-createBullBoard({
-    queues: [new BullAdapter(emailQueue)],
-    serverAdapter
-});
-
-serverAdapter.setBasePath('/admin/queues');
-app.use('/admin/queues', serverAdapter.getRouter());
-
 // Basic routes
 app.get('/', (req, res) => res.send("Server is running"));
 
-// Testing Routes
-app.get('/test-email-services', async (req, res) => {
-    const testEmail = "prajwal.nimbalkar1910@gmail.com";
-    const results = {
-        sendgrid: null,
-        gmailAccounts: []
-    };
 
-    // Test SendGrid
-    try {
-        sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-        await sgMail.send({
-            to: testEmail,
-            from: process.env.EMAIL_FROM,
-            subject: "Test Email from SendGrid",
-            html: `
-                <h1>SendGrid Test Successful!</h1>
-                <p>This email confirms that your SendGrid configuration is working correctly.</p>
-                <p>Timestamp: ${new Date().toLocaleString()}</p>
-            `
-        });
-        results.sendgrid = "Success";
-    } catch (error) {
-        results.sendgrid = `Failed: ${error.message}`;
-    }
-
-    // Test each Gmail account
-    for (let i = 0; i < gmailAccounts.length; i++) {
-        try {
-            const transporter = nodemailer.createTransport({
-                service: 'gmail',
-                auth: {
-                    user: gmailAccounts[i].user,
-                    pass: gmailAccounts[i].pass
-                }
-            });
-
-            await transporter.sendMail({
-                from: gmailAccounts[i].user,
-                to: testEmail,
-                subject: `Test Email from Gmail Account ${i + 1}`,
-                html: `
-                    <h1>Gmail Account ${i + 1} Test Successful!</h1>
-                    <p>This email confirms that your Gmail account ${i + 1} configuration is working correctly.</p>
-                    <p>Sending from: ${gmailAccounts[i].user}</p>
-                    <p>Timestamp: ${new Date().toLocaleString()}</p>
-                `
-            });
-
-            results.gmailAccounts.push({
-                account: gmailAccounts[i].user,
-                status: "Success"
-            });
-        } catch (error) {
-            results.gmailAccounts.push({
-                account: gmailAccounts[i].user,
-                status: `Failed: ${error.message}`
-            });
-        }
-    }
-
-    res.json({
-        success: true,
-        message: "Email service test completed",
-        results
-    });
-});
-
-// Email service status endpoint
-app.get('/em', async (req, res) => {
-    try {
-        const sendGridCount = await emailService.getSendGridCount();
-        
-        const gmailStatus = await Promise.all(
-            gmailAccounts.map(async (account, index) => {
-                const count = await emailService.getGmailCount(index);
-                return {
-                    email: account.user,
-                    emailsSent: count,
-                    remaining: account.dailyLimit - count,
-                    isAvailable: count < account.dailyLimit
-                };
-            })
-        );
-
-        res.json({
-            success: true,
-            status: {
-                sendgrid: {
-                    emailsSent: sendGridCount,
-                    remaining: 100 - sendGridCount,
-                    isAvailable: sendGridCount < 100
-                },
-                gmailAccounts: gmailStatus
-            }
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: "Failed to get email service status"
-        });
-    }
-});
-
-// Add this test endpoint to verify Redis connection
-app.get('/redis-test', async (req, res) => {
-    try {
-        await redis.set('test', 'Hello from Render!');
-        const testValue = await redis.get('test');
-        
-        res.json({
-            success: true,
-            message: 'Redis connection successful',
-            testValue,
-            connectionDetails: {
-                url: UPSTASH_REDIS_URL.replace(/\/\/.*@/, '//***@'), // Hide credentials
-                connected: redis.status === 'ready'
-            }
-        });
-    } catch (error) {
-        console.error('Redis test error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            details: {
-                code: error.code,
-                syscall: error.syscall
-            }
-        });
-    }
-});
 
 // Start server
 const PORT = process.env.PORT || 5000;
