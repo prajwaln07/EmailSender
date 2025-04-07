@@ -8,54 +8,28 @@ const cors = require('cors');
 const Queue = require('bull');
 const Redis = require('ioredis');
 
-// Redis and Bull Queue Configuration
 
 let UPSTASH_REDIS_URL = process.env.UPSTASH_REDIS_URL;
 
-// Redis configuration with reconnect strategy
+
 const redisOptions = {
-    maxRetriesPerRequest: 3,
-    enableReadyCheck: false,
-    retryStrategy(times) {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-    },
-    reconnectOnError(err) {
-        const targetError = 'READONLY';
-        if (err.message.includes(targetError)) {
-            return true;
-        }
-        return false;
-    },
-    tls: { rejectUnauthorized: false }
+  maxRetriesPerRequest: 3,
+  enableReadyCheck: false,
+  tls: { 
+      rejectUnauthorized: false
+  },
 };
 
-// Simple Redis client for general operations
 const redis = new Redis(UPSTASH_REDIS_URL, redisOptions);
 
-// Simplified Bull queue configuration with improved connection handling
+const { hostname, password } = new URL(UPSTASH_REDIS_URL);
+
 const emailQueue = new Queue('email-reminders', {
-    redis: {
-        port: 6379,
-        host: new URL(UPSTASH_REDIS_URL).hostname,
-        password: new URL(UPSTASH_REDIS_URL).password,
-        tls: { rejectUnauthorized: false },
-        maxRetriesPerRequest: 3,
-        enableReadyCheck: false,
-        retryStrategy(times) {
-            const delay = Math.min(times * 50, 2000);
-            return delay;
-        }
-    },
-    defaultJobOptions: {
-        attempts: 3,
-        backoff: {
-            type: 'fixed',
-            delay: 3000
-        },
-        removeOnComplete: true,
-        removeOnFail: 100
-    }
+  redis: {
+    host: hostname,
+    password,
+    tls: { rejectUnauthorized: false },
+  },
 });
 
 
@@ -68,15 +42,7 @@ app.use(cors({
     credentials: true
 }));
 
-// Add security headers
-app.use((req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
-    next();
-});
 
-// Validate environment variables
 const validateEnvVariables = () => {
     const required = [
         'SENDGRID_API_KEY',
@@ -86,12 +52,6 @@ const validateEnvVariables = () => {
         'REDIS_URL'  
     ];
 
-    if (process.env.NODE_ENV === 'production') {
-        if (!process.env.REDIS_URL) {
-            console.error("Missing REDIS_URL in production environment");
-            process.exit(1);
-        }
-    }
 
     const missing = required.filter(key => !process.env[key]);
     if (missing.length > 0) {
@@ -101,7 +61,6 @@ const validateEnvVariables = () => {
 };
 validateEnvVariables();
 
-// Email service configuration
 const gmailAccounts = [
     {
         user: process.env.GMAIL_USER_1,
@@ -120,7 +79,7 @@ const gmailAccounts = [
     }
 ].filter(account => account.user && account.pass);
 
-// Email Service Class
+
 class EmailService {
     
     constructor() {
@@ -182,7 +141,6 @@ class EmailService {
             }
         }
 
-        // Try Gmail accounts
         for (let i = 0; i < gmailAccounts.length; i++) {
             const currentIndex = (this.currentGmailIndex + i) % gmailAccounts.length;
             const gmailCount = await this.getGmailCount(currentIndex);
@@ -213,7 +171,7 @@ class EmailService {
 
 const emailService = new EmailService();
 
-// Rate limiting middleware
+
 const rateLimitMiddleware = async (req, res, next) => {
     const clientIp = req.ip;
     const currentHour = Math.floor(Date.now() / 3600000);
@@ -241,28 +199,9 @@ const rateLimitMiddleware = async (req, res, next) => {
     }
 };
 
-// Add a connection health check
-const checkRedisConnection = async () => {
-    try {
-        await redis.ping();
-        return true;
-    } catch (error) {
-        console.error('Redis health check failed:', error);
-        return false;
-    }
-};
 
 
-// Modify the send-reminder route to include connection check
 app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
-    // Check Redis connection before proceeding
-    const isRedisConnected = await checkRedisConnection();
-    if (!isRedisConnected) {
-        return res.status(503).json({
-            success: false,
-            error: "Service temporarily unavailable. Please try again later....."
-        });
-    }
 
     try {
         const { email, timeInDays, problemLink, problemName, notes } = req.body;
@@ -297,7 +236,7 @@ app.post('/send-reminder', rateLimitMiddleware, async (req, res) => {
     }
 });
 
-// Improved queue processing with better error handling
+
 emailQueue.process(async (job) => {
     try {
         const { email, problemLink, problemName, notes } = job.data;
@@ -340,11 +279,9 @@ emailQueue.process(async (job) => {
 
 
 
-// Basic routes
 app.get('/', (req, res) => res.send("Server is running"));
 
 
 
-// Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
