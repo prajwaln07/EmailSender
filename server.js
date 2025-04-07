@@ -43,29 +43,11 @@ app.use(cors({
 }));
 
 
-const validateEnvVariables = () => {
-    const required = [
-        'SENDGRID_API_KEY',
-        'EMAIL_FROM',
-        'GMAIL_USER_1',
-        'GMAIL_APP_PASSWORD_1',
-        'REDIS_URL'  
-    ];
-
-
-    const missing = required.filter(key => !process.env[key]);
-    if (missing.length > 0) {
-        console.error("Missing required environment variables:", missing);
-        process.exit(1);
-    }
-};
-validateEnvVariables();
-
 const gmailAccounts = [
     {
         user: process.env.GMAIL_USER_1,
         pass: process.env.GMAIL_APP_PASSWORD_1,
-        dailyLimit: 500
+        dailyLimit: 2000
     },
     {
         user: process.env.GMAIL_USER_2,
@@ -128,9 +110,10 @@ class EmailService {
     }
 
     async sendEmail(msg) {
-        // Try SendGrid first
-        const sendGridCount = await this.getSendGridCount();
-        if (sendGridCount < 300) {
+
+      const sendGridCount = await this.getSendGridCount();
+    
+        if (sendGridCount < 100) {
             try {
                 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
                 await sgMail.send(msg);
@@ -173,7 +156,9 @@ const emailService = new EmailService();
 
 
 const rateLimitMiddleware = async (req, res, next) => {
-    const clientIp = req.ip;
+  
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0];
+  
     const currentHour = Math.floor(Date.now() / 3600000);
     const key = `ratelimit:${clientIp}:${currentHour}`;
 
