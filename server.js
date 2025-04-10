@@ -23,8 +23,7 @@ const { hostname, password } = new URL(UPSTASH_REDIS_URL);
 const emailQueue = new Queue('email-reminders', {
   redis: {
     host: hostname,
-    password,
-    tls: { rejectUnauthorized: false },
+    password
   },
 });
 
