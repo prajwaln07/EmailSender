@@ -13,11 +13,7 @@ let UPSTASH_REDIS_URL = process.env.UPSTASH_REDIS_URL;
 
 
 const redisOptions = {
-  maxRetriesPerRequest: 3,
-  enableReadyCheck: false,
-  tls: { 
-      rejectUnauthorized: false
-  },
+  maxRetriesPerRequest: 3
 };
 
 const redis = new Redis(UPSTASH_REDIS_URL, redisOptions);
